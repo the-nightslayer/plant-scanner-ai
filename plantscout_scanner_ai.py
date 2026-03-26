@@ -1,865 +1,390 @@
 import streamlit as st
 import base64
-import json
 import os
-import re
-import hashlib
-import io
-from groq import Groq
+import json
 from datetime import datetime
+from groq import Groq
+from io import BytesIO
 from PIL import Image
 
-# ── Page config ──────────────────────────────────────────────────────────────
+# Configuration and Constants
+HISTORY_FILE = "plant_history.json"
+MODEL_NAME = "meta-llama/llama-4-scout-17b-16e-instruct"
+
+# Initialize Groq Client
+GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY"))
+if not GROQ_API_KEY:
+    st.error("Please set GROQ_API_KEY in .streamlit/secrets.toml or as an environment variable.")
+    st.stop()
+client = Groq(api_key=GROQ_API_KEY)
+
+# Page Config
 st.set_page_config(
-    page_title="Plant Scanner AI",
+    page_title="LeafLens AI",
     page_icon="🌿",
-    layout="centered",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# ── Custom CSS ────────────────────────────────────────────────────────────────
-st.markdown(
+def inject_custom_css():
+    """Injects premium aesthetics using CSS and forces Streamlit's white bars to disappear."""
+    st.markdown("""
+    <style>
+    /* Gradient Background that looks premium and natural */
+    .stApp, .stApp > header {
+        background: linear-gradient(135deg, #dcedc8 0%, #a5d6a7 50%, #81c784 100%) !important;
+        background-attachment: fixed !important;
+        color: #1b5e20;
+    }
+
+    /* Completely nuke all possible Streamlit default headers, toolbars, and white decoration lines */
+    header, 
+    [data-testid="stHeader"], 
+    .stAppHeader, 
+    [data-testid="stToolbar"],
+    .stToolbar,
+    div[data-testid="stDecoration"] {
+        display: none !important;
+        height: 0px !important;
+        visibility: hidden !important;
+        background: transparent !important;
+        opacity: 0 !important;
+    }
+
+    /* Zero out all top spacing so there's absolutely no white margin */
+    #root > div:nth-child(1) {
+        margin-top: 0 !important;
+        padding-top: 0 !important;
+    }
+
+    /* Reduce top padding from the main container */
+    .block-container {
+        padding-top: 1rem !important;
+        margin-top: 0 !important;
+        padding-bottom: 2rem !important;
+    }
+
+    /* Main Typography */
+    h1, h2, h3, p {
+        color: #1b5e20 !important;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+
+    /* Glassmorphism Design for Cards */
+    .glass-card {
+        background: rgba(255, 255, 255, 0.65);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.8);
+        border-radius: 20px;
+        padding: 30px;
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.1);
+        margin-bottom: 25px;
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
+    }
+    
+    .glass-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.15);
+    }
+    
+    .glass-card h3 {
+        margin-top: 0;
+        border-bottom: 2px solid #66bb6a;
+        padding-bottom: 10px;
+        margin-bottom: 15px;
+        color: #2e7d32 !important;
+    }
+
+    /* File Uploader styling */
+    div[data-testid="stFileUploader"] {
+        background: rgba(255, 255, 255, 0.85);
+        border-radius: 20px;
+        padding: 25px;
+        border: 2px dashed #4caf50;
+        transition: border-color 0.3s ease;
+    }
+    div[data-testid="stFileUploader"]:hover {
+        border-color: #1b5e20;
+    }
+    
+    /* Uploaded Image Radius */
+    img {
+        border-radius: 15px;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+    }
+    
+    /* Beautiful Button */
+    .stButton > button {
+        background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%) !important;
+        color: white !important;
+        border-radius: 30px !important;
+        padding: 12px 25px !important;
+        font-size: 18px !important;
+        font-weight: 600 !important;
+        border: none !important;
+        transition: all 0.3s ease !important;
+        box-shadow: 0 4px 15px rgba(46, 125, 50, 0.4) !important;
+        width: 100%;
+        margin-top: 15px;
+    }
+    .stButton > button:hover {
+        transform: scale(1.03);
+        box-shadow: 0 6px 20px rgba(27, 94, 32, 0.6) !important;
+    }
+
+    /* Sidebar aesthetics */
+    [data-testid="stSidebar"] {
+        background: rgba(255,255,255,0.7) !important;
+        backdrop-filter: blur(15px);
+        border-right: 1px solid rgba(255, 255, 255, 0.5);
+    }
+    
+    /* Expander style inside Sidebar */
+    [data-testid="stExpander"] {
+        background: rgba(255,255,255,0.5);
+        border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.8);
+    }
+
+    /* -------------------------------------------------------------------------- */
+    /* ANIMATIONS */
+    /* -------------------------------------------------------------------------- */
+    
+    /* Falling Leaves Animation */
+    @keyframes fall {
+        0% { transform: translateY(-10vh) translateX(-20px) rotate(0deg); opacity: 1; }
+        100% { transform: translateY(110vh) translateX(50px) rotate(360deg); opacity: 0; }
+    }
+    @keyframes fall-reverse {
+        0% { transform: translateY(-10vh) translateX(20px) rotate(0deg); opacity: 1; }
+        100% { transform: translateY(110vh) translateX(-50px) rotate(-360deg); opacity: 0; }
+    }
+    .leaf-container {
+        position: fixed;
+        top: 0; left: 0; width: 100vw; height: 100vh;
+        pointer-events: none; z-index: 0; overflow: hidden;
+    }
+    .leaf {
+        position: absolute;
+        top: -10%;
+        font-size: 28px;
+        opacity: 0; /* start hidden until animation overrides */
+        filter: drop-shadow(0 4px 6px rgba(0,0,0,0.15));
+    }
+
+    /* Water Spray Animation */
+    @keyframes water-burst {
+        0% { transform: translate(0, 0) scale(0.5); opacity: 1; filter: drop-shadow(0 0 5px rgba(64,196,255,0.8)); }
+        70% { opacity: 1; }
+        100% { transform: translate(var(--tx), var(--ty)) scale(1.5) rotate(var(--rot)); opacity: 0; filter: drop-shadow(0 0 20px rgba(64,196,255,0)); }
+    }
+    .water-droplet {
+        position: absolute;
+        bottom: 20px; /* position relative to button */
+        left: 50%;
+        margin-left: -15px; 
+        animation: water-burst 1.5s cubic-bezier(0.1, 0.8, 0.3, 1) forwards;
+        pointer-events: none;
+        z-index: 9999;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # Inject leaves globally
+    st.markdown("""
+    <div class="leaf-container">
+        <div class="leaf" style="left: 10%; animation: fall 12s linear infinite; animation-delay: 0s;">🍃</div>
+        <div class="leaf" style="left: 25%; animation: fall-reverse 15s linear infinite; animation-delay: 2s;">🌿</div>
+        <div class="leaf" style="left: 45%; animation: fall 14s linear infinite; animation-delay: 5s;">🌱</div>
+        <div class="leaf" style="left: 65%; animation: fall-reverse 11s linear infinite; animation-delay: 1s;">🍃</div>
+        <div class="leaf" style="left: 85%; animation: fall 16s linear infinite; animation-delay: 3s;">🌿</div>
+        <div class="leaf" style="left: 95%; animation: fall-reverse 13s linear infinite; animation-delay: 6s;">🌱</div>
+        <div class="leaf" style="left: 5%; animation: fall 10s linear infinite; animation-delay: 7s;">🍃</div>
+        <div class="leaf" style="left: 55%; animation: fall-reverse 18s linear infinite; animation-delay: 4s;">🌿</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r") as f:
+                return json.load(f)
+        except:
+            return []
+    return []
+
+def save_to_history(plant_data):
+    history = load_history()
+    history.insert(0, plant_data)
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(history, f)
+
+def encode_image(image_bytes):
     """
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,400&family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500&display=swap');
+    Optimizes and downscales the image to prevent API payload limits.
+    Returns base64 string.
+    """
+    img = Image.open(BytesIO(image_bytes))
+    if img.mode in ('RGBA', 'P'):
+        img = img.convert('RGB')
+        
+    # Max dimensions for Groq vision reasoning
+    max_size = (1024, 1024)
+    img.thumbnail(max_size, Image.Resampling.LANCZOS)
+    
+    buffered = BytesIO()
+    img.save(buffered, format="JPEG", quality=85)
+    return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
-:root {
-  --moss: #2d4a1e;
-  --fern: #4a7c3f;
-  --sage: #8faa7b;
-  --mint: #c8ddb8;
-  --cream: #f7f4ed;
-  --parchment: #ede8db;
-  --bark: #5c4a32;
-  --honey: #d4a843;
-  --rust: #c05a2e;
-  --ink: #1a1a14;
-  --mist: #e8f0e0;
-  --sky: #e8f4fd;
-  --sky-border: #b8d8f0;
-}
-
-html, body, [class*="css"] {
-  font-family: 'DM Sans', sans-serif !important;
-  background-color: var(--cream) !important;
-  color: var(--ink) !important;
-}
-
-.block-container { max-width: 600px !important; padding-top: 0 !important; }
-
-/* Hide Streamlit chrome */
-#MainMenu, footer, header { visibility: hidden; }
-
-/* ── App Header ── */
-.app-header {
-  background: var(--moss);
-  border-radius: 0 0 20px 20px;
-  padding: 22px 24px 18px;
-  margin: -1rem -1rem 1.5rem -1rem;
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  position: relative;
-  overflow: hidden;
-}
-.app-header::before {
-  content: '';
-  position: absolute;
-  top: -40px; right: -40px;
-  width: 160px; height: 160px;
-  border-radius: 50%;
-  background: rgba(255,255,255,0.04);
-}
-.logo-mark {
-  background: var(--honey);
-  border-radius: 12px;
-  width: 44px; height: 44px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 22px;
-  flex-shrink: 0;
-}
-.header-title {
-  font-family: 'Playfair Display', serif !important;
-  font-size: 24px;
-  font-weight: 900;
-  color: #f7f4ed;
-  line-height: 1;
-  margin: 0;
-}
-.header-sub {
-  font-family: 'DM Mono', monospace !important;
-  font-size: 11px;
-  color: var(--sage);
-  letter-spacing: 0.5px;
-  margin: 3px 0 0 0;
-  font-weight: 300;
-}
-
-/* ── Intro card ── */
-.intro-card {
-  background: var(--parchment);
-  border-radius: 16px;
-  padding: 16px 18px;
-  border: 1px solid var(--mint);
-  display: flex;
-  gap: 12px;
-  margin-bottom: 0.75rem;
-}
-.intro-icon { font-size: 24px; flex-shrink: 0; }
-.intro-card h4 {
-  font-family: 'Playfair Display', serif !important;
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--moss);
-  margin: 0 0 4px 0;
-}
-.intro-card p {
-  font-size: 12px;
-  color: var(--bark);
-  line-height: 1.5;
-  font-weight: 300;
-  margin: 0;
-}
-
-/* ── Section label ── */
-.section-label {
-  font-family: 'DM Mono', monospace !important;
-  font-size: 10px;
-  letter-spacing: 1.5px;
-  text-transform: uppercase;
-  color: var(--bark);
-  font-weight: 500;
-  margin-bottom: 10px;
-  border-bottom: 1px solid var(--mint);
-  padding-bottom: 6px;
-}
-
-/* ── Result header ── */
-.result-header-native {
-  background: linear-gradient(135deg, var(--moss), var(--fern));
-  border-radius: 20px 20px 0 0;
-  padding: 24px 22px;
-  color: white;
-}
-.result-header-invasive {
-  background: linear-gradient(135deg, #7a2020, var(--rust));
-  border-radius: 20px 20px 0 0;
-  padding: 24px 22px;
-  color: white;
-}
-.result-badge {
-  font-family: 'DM Mono', monospace !important;
-  font-size: 9px;
-  font-weight: 500;
-  letter-spacing: 2px;
-  text-transform: uppercase;
-  background: rgba(255,255,255,0.2);
-  color: white;
-  padding: 4px 12px;
-  border-radius: 100px;
-  display: inline-block;
-  margin-bottom: 12px;
-}
-.result-name {
-  font-family: 'Playfair Display', serif !important;
-  font-size: 28px;
-  font-weight: 900;
-  color: white;
-  line-height: 1;
-  margin-bottom: 10px;
-}
-.result-impact {
-  font-size: 13px;
-  color: rgba(255,255,255,0.85);
-  line-height: 1.5;
-  font-weight: 300;
-}
-
-/* ── Info cards ── */
-.bee-card {
-  background: #fffbf0;
-  border: 1px solid #f5e4a0;
-  border-radius: 16px;
-  padding: 16px;
-  display: flex;
-  gap: 14px;
-  margin-bottom: 1rem;
-}
-.bee-icon-box {
-  width: 44px; height: 44px;
-  background: var(--honey);
-  border-radius: 12px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 22px;
-  flex-shrink: 0;
-}
-.card-label {
-  font-family: 'DM Mono', monospace !important;
-  font-size: 10px;
-  letter-spacing: 1.5px;
-  text-transform: uppercase;
-  margin-bottom: 6px;
-  font-weight: 500;
-}
-.bee-card .card-label { color: #8a6d1a; }
-.card-text { font-size: 13px; line-height: 1.5; font-weight: 300; margin: 0; }
-.bee-card .card-text { color: #5a4a1a; }
-
-/* ── Garden card ── */
-.garden-card-good { background: #f0faf0; border: 1px solid #b8ddb8; border-radius: 16px; padding: 16px; display: flex; gap: 14px; margin-bottom: 1rem; }
-.garden-card-caution { background: #fffbf0; border: 1px solid #f5d080; border-radius: 16px; padding: 16px; display: flex; gap: 14px; margin-bottom: 1rem; }
-.garden-card-remove { background: #fdf1ee; border: 1px solid #f0ccc0; border-radius: 16px; padding: 16px; display: flex; gap: 14px; margin-bottom: 1rem; }
-
-.garden-icon-box { width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0; }
-.garden-card-good .garden-icon-box { background: #b8ddb8; }
-.garden-card-caution .garden-icon-box { background: #f5d080; }
-.garden-card-remove .garden-icon-box { background: #f0ccc0; }
-
-.garden-card-good .card-label { color: var(--moss); }
-.garden-card-caution .card-label { color: #7a5a10; }
-.garden-card-remove .card-label { color: var(--rust); }
-
-.garden-verdict {
-  font-family: 'Playfair Display', serif !important;
-  font-size: 15px;
-  font-weight: 700;
-  margin-bottom: 5px;
-}
-.garden-card-good .garden-verdict { color: var(--moss); }
-.garden-card-caution .garden-verdict { color: #7a5a10; }
-.garden-card-remove .garden-verdict { color: var(--rust); }
-
-.garden-summary { font-size: 12px; line-height: 1.55; font-weight: 300; margin: 0; }
-.garden-card-good .garden-summary { color: #2a4a2a; }
-.garden-card-caution .garden-summary { color: #5a4a10; }
-.garden-card-remove .garden-summary { color: #5a2a1a; }
-
-/* ── Stars ── */
-.stars { font-size: 16px; margin-bottom: 6px; letter-spacing: 2px; }
-
-/* ── Care grid ── */
-.care-card {
-  background: var(--sky);
-  border: 1px solid var(--sky-border);
-  border-radius: 16px;
-  padding: 16px;
-  margin-bottom: 1rem;
-}
-.care-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
-.care-stat {
-  background: white;
-  border-radius: 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--sky-border);
-}
-.care-stat-label {
-  font-family: 'DM Mono', monospace !important;
-  font-size: 9px;
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  color: #5a7a9a;
-  font-weight: 500;
-  margin-bottom: 4px;
-}
-.care-stat-value { font-size: 13px; font-weight: 500; color: var(--ink); }
-.difficulty-easy { background: #d0f0d0; color: var(--moss); border-radius: 100px; padding: 3px 10px; font-family: 'DM Mono', monospace; font-size: 10px; font-weight: 500; display: inline-block; }
-.difficulty-moderate { background: #fef0c0; color: #7a5a10; border-radius: 100px; padding: 3px 10px; font-family: 'DM Mono', monospace; font-size: 10px; font-weight: 500; display: inline-block; }
-.difficulty-challenging { background: #fde0d0; color: var(--rust); border-radius: 100px; padding: 3px 10px; font-family: 'DM Mono', monospace; font-size: 10px; font-weight: 500; display: inline-block; }
-
-.care-tips-label {
-  font-family: 'DM Mono', monospace !important;
-  font-size: 10px;
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  color: #5a7a9a;
-  font-weight: 500;
-  margin-bottom: 8px;
-}
-.care-tip {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-  font-size: 12px;
-  color: #2a4a6a;
-  line-height: 1.45;
-  font-weight: 300;
-  padding: 7px 0;
-  border-bottom: 1px solid var(--sky-border);
-}
-.care-tip:last-child { border-bottom: none; }
-.tip-dot { color: #5a9aaa; font-size: 16px; line-height: 1; margin-top: -1px; }
-
-/* ── Plant replacement items ── */
-.plant-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
-  background: var(--mist);
-  border-radius: 14px;
-  border: 1px solid var(--mint);
-  margin-bottom: 8px;
-}
-.plant-num {
-  width: 26px; height: 26px;
-  background: var(--fern);
-  color: white;
-  border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  font-family: 'DM Mono', monospace;
-  font-size: 11px;
-  font-weight: 500;
-  flex-shrink: 0;
-}
-.plant-name {
-  font-family: 'Playfair Display', serif !important;
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--moss);
-  line-height: 1;
-  margin-bottom: 3px;
-}
-.plant-benefit { font-size: 11px; color: var(--bark); font-weight: 300; line-height: 1.3; }
-.bee-tag {
-  margin-left: auto;
-  background: var(--honey);
-  color: white;
-  font-size: 9px;
-  font-family: 'DM Mono', monospace;
-  padding: 3px 8px;
-  border-radius: 100px;
-  flex-shrink: 0;
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-/* ── History item ── */
-.history-item {
-  background: white;
-  border-radius: 16px;
-  padding: 14px;
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  border: 1px solid var(--mint);
-  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-  margin-bottom: 10px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.history-item-name {
-  font-family: 'Playfair Display', serif !important;
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--ink);
-}
-.history-native { font-family: 'DM Mono', monospace; font-size: 10px; color: var(--fern); font-weight: 500; text-transform: uppercase; }
-.history-invasive { font-family: 'DM Mono', monospace; font-size: 10px; color: var(--rust); font-weight: 500; text-transform: uppercase; }
-.history-time { font-size: 11px; color: #aaa; font-weight: 300; margin-top: 2px; }
-
-/* ── Streamlit widget overrides ── */
-.stButton button {
-  background: linear-gradient(135deg, var(--fern), var(--moss)) !important;
-  color: white !important;
-  border: none !important;
-  border-radius: 14px !important;
-  font-family: 'Playfair Display', serif !important;
-  font-style: italic !important;
-  font-size: 16px !important;
-  padding: 14px 0 !important;
-  width: 100%;
-  transition: all 0.2s !important;
-}
-.stButton button:hover { opacity: 0.9 !important; }
-div[data-testid="stFileUploader"] {
-  border: 2px dashed var(--mint) !important;
-  border-radius: 20px !important;
-  background: var(--mist) !important;
-  padding: 12px !important;
-}
-
-/* When we've uploaded an image, we replace the uploader area with a preview. */
-.upload-preview {
-  border: 2px dashed var(--mint) !important;
-  border-radius: 20px !important;
-  background: var(--mist) !important;
-  padding: 14px !important;
-  min-height: 320px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.upload-preview-img {
-  width: 100%;
-  height: 100%;
-  max-height: 420px;
-  object-fit: contain;
-  border-radius: 12px;
-  display: block;
-}
-</style>
-""",
-    unsafe_allow_html=True,
-)
-
-# ── Session state ─────────────────────────────────────────────────────────────
-if "history" not in st.session_state:
-    st.session_state.history = []
-if "selected_scan" not in st.session_state:
-    st.session_state.selected_scan = None
-if "last_result" not in st.session_state:
-    st.session_state.last_result = None
-if "last_uploaded_hash" not in st.session_state:
-    st.session_state.last_uploaded_hash = None
-if "uploaded_image_bytes" not in st.session_state:
-    st.session_state.uploaded_image_bytes = None
-if "uploaded_mime" not in st.session_state:
-    st.session_state.uploaded_mime = "image/jpeg"
-if "uploader_version" not in st.session_state:
-    st.session_state.uploader_version = 0
-
-
-def load_groq_api_key() -> str | None:
-    # 1) Streamlit secrets (when configured)
+def analyze_plant(base64_image):
+    prompt = """
+    Analyze this plant image and provide a JSON response EXACTLY with these keys. Do not return any markdown codeblocks or text outside the JSON. Return valid JSON only:
+    {
+        "name": "Common name of the plant",
+        "health_status": "Is it healthy? If not, what is wrong? Provide specific details.",
+        "maintenance": "How to maintain it (water, light, soil).",
+        "garden_suitability": "Is it good for a typical garden or indoors? Why?",
+        "bee_impact": "How does it impact bees and pollinators?"
+    }
+    """
+    
     try:
-        key = st.secrets.get("GROQ_API_KEY")  # type: ignore[attr-defined]
-        if key:
-            return str(key)
-    except Exception:
-        pass
-
-    # 2) Environment variable
-    key = os.environ.get("GROQ_API_KEY")
-    if key:
-        return key
-
-    # 3) Local `.env` (useful for local development)
-    env_path = os.path.join(os.path.dirname(__file__), ".env")
-    try:
-        if os.path.exists(env_path):
-            with open(env_path, "r", encoding="utf-8") as f:
-                lines = [ln.strip() for ln in f.readlines()]
-            for ln in lines:
-                if not ln or ln.startswith("#"):
-                    continue
-                if "=" in ln:
-                    k, v = ln.split("=", 1)
-                    if k.strip() == "GROQ_API_KEY":
-                        return v.strip().strip("'").strip('"')
-                else:
-                    # If `.env` is just the raw token value
-                    return ln.strip().strip("'").strip('"')
-    except Exception:
+        completion = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+                        }
+                    ]
+                }
+            ],
+            response_format={"type": "json_object"}
+        )
+        content = completion.choices[0].message.content
+        if content.startswith("```json"):
+            content = content.replace("```json", "", 1).replace("```", "")
+        return json.loads(content)
+    except Exception as e:
+        st.error(f"Analysis failed: {str(e)}")
         return None
 
-    return None
+def main():
+    inject_custom_css()
+    
+    # Beautiful Header
+    st.markdown("<h1 style='text-align: center; font-size: 3.5em; padding-top: 10px;'>🌿 LeafLens AI</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; font-size: 1.3em; margin-bottom: 40px;'>Upload a photo of your plant to instantly uncover its secrets and health status.</p>", unsafe_allow_html=True)
 
+    # Sidebar for History
+    st.sidebar.markdown("<h2>📚 Botanical Journal</h2>", unsafe_allow_html=True)
+    search_query = st.sidebar.text_input("Search history...", "")
+    history = load_history()
+    
+    filtered_history = [
+        item for item in history 
+        if 'name' in item and search_query.lower() in item['name'].lower()
+    ]
 
-GROQ_API_KEY = load_groq_api_key()
+    for item in filtered_history:
+        if 'name' in item:
+            with st.sidebar.expander(f"🍃 {item.get('name', 'Unknown')} ({item.get('date', '')})"):
+                st.write(f"**Health:** {item.get('health_status', 'N/A')}")
+                st.write(f"**Bees:** {item.get('bee_impact', 'N/A')}")
 
+    # Main Layout
+    col1, padding, col2 = st.columns([1.2, 0.1, 1.7])
 
-# ── Groq client ───────────────────────────────────────────────────────────────
-@st.cache_resource
-def get_client(api_key: str) -> Groq:
-    return Groq(api_key=api_key)
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-def stars_html(rating: int) -> str:
-    n = max(1, min(5, int(rating or 3)))
-    filled = "★" * n
-    empty = "☆" * (5 - n)
-    return f'<div class="stars" style="color:#d4a843">{filled}<span style="color:#ddd">{empty}</span></div>'
-
-
-def difficulty_html(d: str) -> str:
-    d = (d or "Moderate").strip()
-    cls = {
-        "easy": "difficulty-easy",
-        "challenging": "difficulty-challenging",
-    }.get(d.lower(), "difficulty-moderate")
-    return f'<span class="{cls}">{d}</span>'
-
-
-def garden_class(verdict: str) -> str:
-    v = (verdict or "").lower()
-    if "remove" in v:
-        return "remove"
-    if "caution" in v:
-        return "caution"
-    return "good"
-
-
-GARDEN_ICON = {"good": "🌸", "caution": "⚠️", "remove": "🚫"}
-
-
-def time_ago(ts: datetime) -> str:
-    diff = (datetime.now() - ts).total_seconds()
-    if diff < 60:
-        return "Just now"
-    if diff < 3600:
-        return f"{int(diff/60)}m ago"
-    if diff < 86400:
-        return f"{int(diff/3600)}h ago"
-    return f"{int(diff/86400)}d ago"
-
-
-# This prompt matches the UI renderer in this file.
-PROMPT = """Identify this plant and return ONLY valid JSON (no markdown, no extra text) with these keys:
-{
-  "commonName": "Plant name",
-  "isNative": true or false,
-  "isInvasive": true or false,
-  "impact": "1-2 sentence ecological impact",
-  "beeSupport": "1-2 sentence description of how this plant affects local bees",
-  "gardenRating": number 1-5 where 5 is excellent for home gardens,
-  "gardenVerdict": exactly one of: "Good for your garden" or "Caution advised" or "Remove from garden",
-  "gardenSummary": "2-3 sentences on suitability for home gardens covering spread, aesthetics, neighbour impact",
-  "care": {
-    "sunlight": "Full sun or Partial shade or Full shade",
-    "watering": "e.g. Weekly, Drought tolerant, Keep moist",
-    "soil": "e.g. Well-drained loamy, Sandy dry, Rich moist",
-    "difficulty": exactly one of: "Easy" or "Moderate" or "Challenging",
-    "tips": ["tip 1", "tip 2", "tip 3"]
-  },
-  "nativeReplacements": [
-    {"name": "Plant name", "benefit": "Brief ecological benefit"},
-    {"name": "Plant name", "benefit": "Brief ecological benefit"},
-    {"name": "Plant name", "benefit": "Brief ecological benefit"}
-  ]
-}"""
-
-
-def analyse_plant(client: Groq, image_bytes: bytes, mime: str) -> dict:
-    b64 = base64.b64encode(image_bytes).decode()
-    response = client.chat.completions.create(
-        model="meta-llama/llama-4-scout-17b-16e-instruct",
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
-                    {"type": "text", "text": PROMPT},
-                ],
-            }
-        ],
-        temperature=0.2,
-        max_completion_tokens=1500,
-        response_format={"type": "json_object"},
-    )
-    raw = response.choices[0].message.content or ""
-    # Fallback for cases where the model returns code fences anyway
-    clean = re.sub(r"```json\n?|\n?```", "", raw).strip()
-    return json.loads(clean)
-
-
-def render_result(data: dict):
-    gc = garden_class(data.get("gardenVerdict", ""))
-    header_cls = "result-header-invasive" if data.get("isInvasive") else "result-header-native"
-    badge = "⚠ Invasive Species" if data.get("isInvasive") else "✓ Native Plant"
-
-    st.markdown(
-        f"""
-<div class="{header_cls}">
-  <div class="result-badge">{badge}</div>
-  <div class="result-name">{data.get("commonName","Unknown")}</div>
-  <p class="result-impact">{data.get("impact","")}</p>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-
-    st.markdown('<div class="section-label">🐝 Bee Friendliness</div>', unsafe_allow_html=True)
-    st.markdown(
-        f"""
-<div class="bee-card">
-  <div class="bee-icon-box">🐝</div>
-  <div>
-    <div class="card-label">Bee Impact</div>
-    <p class="card-text">{data.get("beeSupport","")}</p>
-  </div>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-
-    st.markdown('<div class="section-label">🌱 Care & Maintenance</div>', unsafe_allow_html=True)
-    care = data.get("care", {})
-    tips = care.get("tips", []) or []
-    tips_html = "".join(
-        f'<div class="care-tip"><span class="tip-dot">•</span><span>{t}</span></div>'
-        for t in tips
-    )
-    st.markdown(
-        f"""
-<div class="care-card">
-  <div class="care-grid">
-    <div class="care-stat">
-      <div class="care-stat-label">☀️ Sunlight</div>
-      <div class="care-stat-value">{care.get("sunlight","—")}</div>
-    </div>
-    <div class="care-stat">
-      <div class="care-stat-label">💧 Watering</div>
-      <div class="care-stat-value">{care.get("watering","—")}</div>
-    </div>
-    <div class="care-stat">
-      <div class="care-stat-label">🪱 Soil</div>
-      <div class="care-stat-value">{care.get("soil","—")}</div>
-    </div>
-    <div class="care-stat">
-      <div class="care-stat-label">📊 Difficulty</div>
-      {difficulty_html(care.get("difficulty","Moderate"))}
-    </div>
-  </div>
-  <div class="care-tips-label">Tips</div>
-  {tips_html}
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-
-    # Optional: keep the garden verdict card for extra usefulness.
-    st.markdown('<div class="section-label">🏡 Garden Suitability</div>', unsafe_allow_html=True)
-    st.markdown(
-        f"""
-<div class="garden-card-{gc}">
-  <div class="garden-icon-box">{GARDEN_ICON[gc]}</div>
-  <div style="flex:1">
-    <div class="card-label">Garden Assessment</div>
-    {stars_html(data.get("gardenRating", 3))}
-    <div class="garden-verdict">{data.get("gardenVerdict","")}</div>
-    <p class="garden-summary">{data.get("gardenSummary","")}</p>
-  </div>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-
-    replacements = data.get("nativeReplacements", [])
-    if replacements:
-        st.markdown('<div class="section-label">🌿 Plant These Instead</div>', unsafe_allow_html=True)
-        for i, plant in enumerate(replacements, 1):
-            st.markdown(
-                f"""
-<div class="plant-item">
-  <div class="plant-num">{i}</div>
-  <div style="flex:1">
-    <div class="plant-name">{plant.get("name","")}</div>
-    <div class="plant-benefit">{plant.get("benefit","")}</div>
-  </div>
-  <div class="bee-tag">🐝 Bee Safe</div>
-</div>
-""",
-                unsafe_allow_html=True,
-            )
-
-
-# ── App header ────────────────────────────────────────────────────────────────
-st.markdown(
-    """
-<div class="app-header">
-  <div class="logo-mark">🌿</div>
-  <div>
-    <p class="header-title">Plant Scanner AI</p>
-    <p class="header-sub">Identify plants · See bee impact · Get care tips</p>
-  </div>
-</div>
-""",
-    unsafe_allow_html=True,
-)
-
-# ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_scanner, tab_history = st.tabs(["📷  Scanner", "📊  History"])
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SCANNER TAB
-# ═══════════════════════════════════════════════════════════════════════════════
-with tab_scanner:
-    st.markdown(
-        """
-<div class="intro-card">
-  <div class="intro-icon">🐝</div>
-  <div>
-    <h4>Identify & Replant for Bees</h4>
-    <p>Click the white upload area to add a plant photo. The app will scan it automatically and show plant info, bee impact, and care tips.</p>
-  </div>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-
-    if not GROQ_API_KEY:
-        st.warning("⚠ Groq API key is not configured. Set it in `.env` as `GROQ_API_KEY=...`.")
-
-    # Use a placeholder so the upload zone can be replaced immediately by the preview image.
-    upload_slot = st.empty()
-
-    if st.session_state.uploaded_image_bytes is None:
-        with upload_slot.container():
-            uploaded = st.file_uploader(
-                "Upload a plant photo",
-                type=["jpg", "jpeg", "png", "webp"],
-                label_visibility="collapsed",
-                key=f"plant_uploader_{st.session_state.uploader_version}",
-            )
-
-        # If a file was uploaded, scan it and then replace the upload zone with the image.
-        if uploaded is not None:
-            st.session_state.uploaded_image_bytes = uploaded.getvalue()
-            st.session_state.uploaded_mime = uploaded.type or "image/jpeg"
-
-            file_hash = hashlib.sha256(st.session_state.uploaded_image_bytes).hexdigest()
-            st.session_state.last_result = None
-
-            # Auto-scan only when the uploaded image changes
-            if GROQ_API_KEY and st.session_state.last_uploaded_hash != file_hash:
-                st.session_state.last_uploaded_hash = file_hash
-                with st.spinner("🌿 Scanning plant..."):
-                    try:
-                        client = get_client(GROQ_API_KEY)
-                        result = analyse_plant(
-                            client,
-                            st.session_state.uploaded_image_bytes,
-                            st.session_state.uploaded_mime,
-                        )
-                        st.session_state.history.insert(
-                            0,
-                            {
-                                **result,
-                                "timestamp": datetime.now(),
-                                "image_bytes": st.session_state.uploaded_image_bytes,
-                                "mime": st.session_state.uploaded_mime,
-                            },
-                        )
-                        st.session_state.last_result = result
-                    except json.JSONDecodeError:
-                        st.error("Could not parse plant data. Try a clearer photo.")
-                    except Exception as e:
-                        st.error(f"Scan failed: {e}")
-
-            # Replace uploader zone with the preview image (same slot).
-            upload_slot.empty()
-            b64 = base64.b64encode(st.session_state.uploaded_image_bytes).decode("utf-8")
-            st.markdown(
-                f"""
-<div class='upload-preview'>
-  <img class='upload-preview-img' src="data:{st.session_state.uploaded_mime};base64,{b64}" alt="Uploaded plant"/>
-</div>
-""",
-                unsafe_allow_html=True,
-            )
-    else:
-        # Already uploaded: show preview in the same slot.
-        with upload_slot.container():
-            b64 = base64.b64encode(st.session_state.uploaded_image_bytes).decode("utf-8")
-            st.markdown(
-                f"""
-<div class='upload-preview'>
-  <img class='upload-preview-img' src="data:{st.session_state.uploaded_mime};base64,{b64}" alt="Uploaded plant"/>
-</div>
-""",
-                unsafe_allow_html=True,
-            )
-
-        if st.button("Upload another photo"):
-            st.session_state.uploaded_image_bytes = None
-            st.session_state.last_uploaded_hash = None
-            st.session_state.last_result = None
-            st.session_state.uploader_version += 1
-            st.rerun()
-
-    if st.session_state.last_result is not None and st.session_state.uploaded_image_bytes is not None:
-        render_result(st.session_state.last_result)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# HISTORY TAB
-# ═══════════════════════════════════════════════════════════════════════════════
-with tab_history:
-    history = st.session_state.history
-
-    if st.session_state.selected_scan is not None:
-        scan = st.session_state.selected_scan
-
-        if st.button("← Back to History"):
-            st.session_state.selected_scan = None
-            st.rerun()
-
-        try:
-            st.image(scan["image_bytes"], width=320)
-        except Exception:
-            pass
-        render_result(scan)
-
-    else:
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            st.markdown(
-                f"""
-<h2 style="font-family:'Playfair Display',serif;font-size:24px;
-            font-weight:900;color:var(--moss);margin:0 0 4px 0">
-  My Scans
-</h2>
-""",
-                unsafe_allow_html=True,
-            )
-        with col2:
-            st.markdown(
-                f"""
-<p style="font-family:'DM Mono',monospace;font-size:11px;
-           color:var(--sage);font-weight:300;margin-top:8px;text-align:right">
-  {len(history)} plants
-</p>
-""",
-                unsafe_allow_html=True,
-            )
-
-        if not history:
-            st.markdown(
-                """
-<div style="text-align:center;padding:48px 20px;background:var(--mist);
-             border-radius:20px;border:2px dashed var(--mint)">
-  <div style="font-size:48px;margin-bottom:12px;opacity:0.4">🌾</div>
-  <h3 style="font-family:'Playfair Display',serif;color:var(--moss);
-              font-style:italic;margin-bottom:6px">No scans yet</h3>
-  <p style="font-family:'DM Mono',monospace;font-size:12px;
-              color:var(--sage);font-weight:300">
-    scan your first plant to see it here
-  </p>
-</div>
-""",
-                unsafe_allow_html=True,
-            )
+    with col1:
+        st.markdown("""
+        <div class='glass-card' style='text-align: center; padding: 15px; margin-bottom: 25px;'>
+            <h3 style='border-bottom: none; margin-bottom: 0px;'>📸 Capture & Discover</h3>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Session state for managing the uploaded file to replace the widget UX
+        if 'plant_image_bytes' not in st.session_state:
+            st.session_state.plant_image_bytes = None
+            st.session_state.plant_image_name = ""
+            
+        if st.session_state.plant_image_bytes is None:
+            uploaded_file = st.file_uploader("", type=["jpg", "jpeg", "png", "webp"])
+            if uploaded_file is not None:
+                st.session_state.plant_image_bytes = uploaded_file.getvalue()
+                st.session_state.plant_image_name = uploaded_file.name
+                st.rerun() # Refresh to hide uploader and show image
         else:
-            for i, scan in enumerate(history):
-                status_cls = "history-invasive" if scan.get("isInvasive") else "history-native"
-                status_text = "⚠ Invasive" if scan.get("isInvasive") else "✓ Native"
-                ago = time_ago(scan["timestamp"])
+            # Display image in place of the uploader
+            st.image(st.session_state.plant_image_bytes, caption=st.session_state.plant_image_name, use_container_width=True)
+            
+            # Action Buttons
+            if st.button("✨ Identify & Analyze Plant"):
+                with st.spinner("🌿 Consulting the botanical AI..."):
+                    base64_img = encode_image(st.session_state.plant_image_bytes)
+                    result = analyze_plant(base64_img)
+                    
+                    if result:
+                        result['date'] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        save_to_history(result)
+                        st.session_state['last_result'] = result
+                        
+                        # Spray water effect immediately after analyzing
+                        st.markdown("""
+                            <div style="position: relative; width: 100%; height: 0; display: flex; justify-content: center;">
+                                <div class="water-droplet" style="--tx: -120px; --ty: -180px; --rot: -45deg; font-size: 35px;">💦</div>
+                                <div class="water-droplet" style="--tx: 120px; --ty: -160px; --rot: 45deg; font-size: 30px;">💧</div>
+                                <div class="water-droplet" style="--tx: 0px; --ty: -220px; --rot: 0deg; font-size: 40px;">💦</div>
+                                <div class="water-droplet" style="--tx: -70px; --ty: -140px; --rot: -20deg; font-size: 25px;">💧</div>
+                                <div class="water-droplet" style="--tx: 70px; --ty: -150px; --rot: 20deg; font-size: 28px;">💦</div>
+                                <div class="water-droplet" style="--tx: -40px; --ty: -200px; --rot: -10deg; font-size: 32px;">💧</div>
+                                <div class="water-droplet" style="--tx: 40px; --ty: -210px; --rot: 10deg; font-size: 38px;">💦</div>
+                                <div class="water-droplet" style="--tx: -160px; --ty: -100px; --rot: -60deg; font-size: 24px;">💧</div>
+                                <div class="water-droplet" style="--tx: 160px; --ty: -110px; --rot: 60deg; font-size: 26px;">💦</div>
+                            </div>
+                        """, unsafe_allow_html=True)
+            
+            # Button to clear the image and bring the uploader back
+            if st.button("🔄 Choose Different Photo"):
+                st.session_state.plant_image_bytes = None
+                st.session_state.plant_image_name = ""
+                if 'last_result' in st.session_state:
+                    del st.session_state['last_result']
+                st.rerun()
 
-                col_img, col_info, col_btn = st.columns([1, 4, 1])
-                with col_img:
-                    try:
-                        st.image(scan["image_bytes"], width=56)
-                    except Exception:
-                        pass
+    with col2:
+        if 'last_result' in st.session_state:
+            res = st.session_state['last_result']
+            st.markdown(f"<h2 style='margin-top: 0;'>🌿 Analysis: {res.get('name', 'Unknown Plant')}</h2>", unsafe_allow_html=True)
+            
+            st.markdown(f"""
+            <div class="glass-card">
+                <h3>🩺 Health & Maintenance</h3>
+                <p><strong>Status:</strong> {res.get('health_status', 'N/A')}</p>
+                <p><strong>Care Routine:</strong> {res.get('maintenance', 'N/A')}</p>
+            </div>
+            
+            <div class="glass-card">
+                <h3>🏡 Garden Suitability</h3>
+                <p>{res.get('garden_suitability', 'N/A')}</p>
+            </div>
+            
+            <div class="glass-card">
+                <h3>🐝 Environmental Impact</h3>
+                <p>{res.get('bee_impact', 'N/A')}</p>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div class="glass-card" style="text-align: center; padding: 60px 20px;">
+                <h3 style="border: none; margin-bottom: 20px; font-size: 1.8em;">Awaiting a Plant...</h3>
+                <p style="font-size: 1.2em; color: #388e3c;">Upload a photo on the left, and I will reveal everything about its health, care instructions, and impact on our environment!</p>
+            </div>
+            """, unsafe_allow_html=True)
 
-                with col_info:
-                    st.markdown(
-                        f"""
-<div class="history-item-name">{scan.get("commonName","Unknown")}</div>
-<div class="{status_cls}">{status_text}</div>
-<div class="history-time">{ago}</div>
-""",
-                        unsafe_allow_html=True,
-                    )
-
-                with col_btn:
-                    if st.button("›", key=f"hist_{i}"):
-                        st.session_state.selected_scan = scan
-                        st.rerun()
-
-                st.markdown(
-                    "<hr style='border:none;border-top:1px solid var(--mint);margin:6px 0'>",
-                    unsafe_allow_html=True,
-                )
-
+if __name__ == "__main__":
+    main()
