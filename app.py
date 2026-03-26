@@ -1,486 +1,390 @@
 import streamlit as st
 import base64
-import json
 import os
-import hashlib
+import json
 from datetime import datetime
 from groq import Groq
+from io import BytesIO
 from PIL import Image
-import io
 
-# ============================================
-# GROQ API KEY
-# Set in Streamlit Secrets (`.streamlit/secrets.toml`) or env var `GROQ_API_KEY`.
-# ============================================
-GROQ_API_KEY = None
-try:
-    # Streamlit secrets are available when running inside Streamlit.
-    GROQ_API_KEY = st.secrets.get("GROQ_API_KEY")  # type: ignore[attr-defined]
-except Exception:
-    GROQ_API_KEY = None
+# Configuration and Constants
+HISTORY_FILE = "plant_history.json"
+MODEL_NAME = "meta-llama/llama-4-scout-17b-16e-instruct"
 
+# Initialize Groq Client
+GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY"))
 if not GROQ_API_KEY:
-    GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+    st.error("Please set GROQ_API_KEY in .streamlit/secrets.toml or as an environment variable.")
+    st.stop()
+client = Groq(api_key=GROQ_API_KEY)
 
-# Fallback: load from local `.env` file (so you don't have to paste the key manually)
-# Supports either:
-#   - GROQ_API_KEY="...."
-#   - raw value on the first non-empty line (common in simple one-line .env files)
-if not GROQ_API_KEY:
-    env_path = os.path.join(os.path.dirname(__file__), ".env")
-    try:
-        if os.path.exists(env_path):
-            with open(env_path, "r", encoding="utf-8") as f:
-                lines = [ln.strip() for ln in f.readlines()]
-            for ln in lines:
-                if not ln or ln.startswith("#"):
-                    continue
-                if "=" in ln:
-                    k, v = ln.split("=", 1)
-                    if k.strip() == "GROQ_API_KEY":
-                        GROQ_API_KEY = v.strip().strip("'").strip('"')
-                        break
-                else:
-                    # If the .env is just the raw key value
-                    GROQ_API_KEY = ln.strip().strip("'").strip('"')
-                    break
-    except Exception:
-        GROQ_API_KEY = None
-
-if not GROQ_API_KEY:
-    st.warning(
-        "Missing `GROQ_API_KEY`. The app UI will still load, but plant analysis is disabled until you set it in "
-        "Streamlit secrets (`.streamlit/secrets.toml`) or the `GROQ_API_KEY` environment variable."
-    )
-    client = None
-else:
-    # Initialize Groq client
-    client = Groq(api_key=GROQ_API_KEY)
-
-# Page configuration
+# Page Config
 st.set_page_config(
-    page_title="Plant Scanner AI",
+    page_title="LeafLens AI",
     page_icon="🌿",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for styling
-st.markdown("""
-<style>
-    .main-header {
-        font-size: 3rem;
-        font-weight: 700;
-        color: #2d5a27;
-        text-align: center;
-        margin-bottom: 0.5rem;
+def inject_custom_css():
+    """Injects premium aesthetics using CSS and forces Streamlit's white bars to disappear."""
+    st.markdown("""
+    <style>
+    /* Gradient Background that looks premium and natural */
+    .stApp, .stApp > header {
+        background: linear-gradient(135deg, #dcedc8 0%, #a5d6a7 50%, #81c784 100%) !important;
+        background-attachment: fixed !important;
+        color: #1b5e20;
     }
-    .sub-header {
-        font-size: 1.2rem;
-        color: #5a8f53;
-        text-align: center;
-        margin-bottom: 2rem;
+
+    /* Completely nuke all possible Streamlit default headers, toolbars, and white decoration lines */
+    header, 
+    [data-testid="stHeader"], 
+    .stAppHeader, 
+    [data-testid="stToolbar"],
+    .stToolbar,
+    div[data-testid="stDecoration"] {
+        display: none !important;
+        height: 0px !important;
+        visibility: hidden !important;
+        background: transparent !important;
+        opacity: 0 !important;
     }
-    .result-card {
-        background: linear-gradient(135deg, #f0f9f0 0%, #e8f5e8 100%);
-        padding: 1.5rem;
-        border-radius: 1rem;
-        border-left: 4px solid #2d5a27;
-        margin: 1rem 0;
+
+    /* Zero out all top spacing so there's absolutely no white margin */
+    #root > div:nth-child(1) {
+        margin-top: 0 !important;
+        padding-top: 0 !important;
     }
-    .bee-badge {
-        background: #fef3c7;
-        color: #92400e;
-        padding: 0.5rem 1rem;
-        border-radius: 2rem;
-        display: inline-block;
-        font-weight: 600;
+
+    /* Reduce top padding from the main container */
+    .block-container {
+        padding-top: 1rem !important;
+        margin-top: 0 !important;
+        padding-bottom: 2rem !important;
     }
-    .garden-badge {
-        background: #d1fae5;
-        color: #065f46;
-        padding: 0.5rem 1rem;
-        border-radius: 2rem;
-        display: inline-block;
-        font-weight: 600;
+
+    /* Main Typography */
+    h1, h2, h3, p {
+        color: #1b5e20 !important;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     }
-    .history-item {
-        background: white;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        border: 1px solid #e5e7eb;
-        margin: 0.5rem 0;
+
+    /* Glassmorphism Design for Cards */
+    .glass-card {
+        background: rgba(255, 255, 255, 0.65);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.8);
+        border-radius: 20px;
+        padding: 30px;
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.1);
+        margin-bottom: 25px;
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
     }
+    
+    .glass-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.15);
+    }
+    
+    .glass-card h3 {
+        margin-top: 0;
+        border-bottom: 2px solid #66bb6a;
+        padding-bottom: 10px;
+        margin-bottom: 15px;
+        color: #2e7d32 !important;
+    }
+
+    /* File Uploader styling */
+    div[data-testid="stFileUploader"] {
+        background: rgba(255, 255, 255, 0.85);
+        border-radius: 20px;
+        padding: 25px;
+        border: 2px dashed #4caf50;
+        transition: border-color 0.3s ease;
+    }
+    div[data-testid="stFileUploader"]:hover {
+        border-color: #1b5e20;
+    }
+    
+    /* Uploaded Image Radius */
+    img {
+        border-radius: 15px;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+    }
+    
+    /* Beautiful Button */
     .stButton > button {
-        background-color: #2d5a27;
-        color: white;
-        border-radius: 0.5rem;
-        padding: 0.5rem 2rem;
-        font-weight: 600;
+        background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%) !important;
+        color: white !important;
+        border-radius: 30px !important;
+        padding: 12px 25px !important;
+        font-size: 18px !important;
+        font-weight: 600 !important;
+        border: none !important;
+        transition: all 0.3s ease !important;
+        box-shadow: 0 4px 15px rgba(46, 125, 50, 0.4) !important;
+        width: 100%;
+        margin-top: 15px;
     }
     .stButton > button:hover {
-        background-color: #1e3d1a;
+        transform: scale(1.03);
+        box-shadow: 0 6px 20px rgba(27, 94, 32, 0.6) !important;
     }
-</style>
-""", unsafe_allow_html=True)
 
-# Initialize session state for history
-if 'scan_history' not in st.session_state:
-    st.session_state.scan_history = []
-
-if 'show_history' not in st.session_state:
-    st.session_state.show_history = False
-
-if 'last_uploaded_hash' not in st.session_state:
-    st.session_state.last_uploaded_hash = None
-
-if 'latest_result' not in st.session_state:
-    st.session_state.latest_result = None
-
-
-def encode_image_to_base64(image_file):
-    """Convert uploaded image to base64 string."""
-    return base64.standard_b64encode(image_file.getvalue()).decode("utf-8")
-
-
-def analyze_plant(image_base64, image_type="image/jpeg"):
-    """Analyze the plant image using Groq's vision model."""
-    if client is None:
-        st.error("Groq API key not configured. Set `GROQ_API_KEY` to enable analysis.")
-        return None
+    /* Sidebar aesthetics */
+    [data-testid="stSidebar"] {
+        background: rgba(255,255,255,0.7) !important;
+        backdrop-filter: blur(15px);
+        border-right: 1px solid rgba(255, 255, 255, 0.5);
+    }
     
-    prompt = """You are an expert botanist and garden specialist. Analyze this plant image and provide detailed information in the following JSON format:
+    /* Expander style inside Sidebar */
+    [data-testid="stExpander"] {
+        background: rgba(255,255,255,0.5);
+        border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.8);
+    }
 
-{
-    "plant_name": "Common name of the plant",
-    "scientific_name": "Scientific/Latin name",
-    "plant_type": "Type (flower, shrub, tree, herb, vegetable, etc.)",
-    "bee_friendly": {
-        "is_good_for_bees": true/false,
-        "bee_rating": "Excellent/Good/Moderate/Poor",
-        "explanation": "Why this plant is good or bad for bees"
-    },
-    "garden_suitability": {
-        "is_good_for_garden": true/false,
-        "garden_rating": "Excellent/Good/Moderate/Poor",
-        "benefits": ["list of garden benefits"],
-        "considerations": ["any concerns or considerations"]
-    },
-    "maintenance": {
-        "difficulty": "Easy/Moderate/Difficult",
-        "watering": "Watering requirements and frequency",
-        "sunlight": "Sunlight requirements",
-        "soil": "Preferred soil type",
-        "pruning": "Pruning advice",
-        "fertilizing": "Fertilizing recommendations",
-        "seasonal_care": "Season-specific care tips",
-        "common_problems": ["Common issues and how to prevent them"],
-        "tips": ["Additional maintenance tips"]
-    },
-    "interesting_facts": ["2-3 interesting facts about this plant"]
-}
+    /* -------------------------------------------------------------------------- */
+    /* ANIMATIONS */
+    /* -------------------------------------------------------------------------- */
+    
+    /* Falling Leaves Animation */
+    @keyframes fall {
+        0% { transform: translateY(-10vh) translateX(-20px) rotate(0deg); opacity: 1; }
+        100% { transform: translateY(110vh) translateX(50px) rotate(360deg); opacity: 0; }
+    }
+    @keyframes fall-reverse {
+        0% { transform: translateY(-10vh) translateX(20px) rotate(0deg); opacity: 1; }
+        100% { transform: translateY(110vh) translateX(-50px) rotate(-360deg); opacity: 0; }
+    }
+    .leaf-container {
+        position: fixed;
+        top: 0; left: 0; width: 100vw; height: 100vh;
+        pointer-events: none; z-index: 0; overflow: hidden;
+    }
+    .leaf {
+        position: absolute;
+        top: -10%;
+        font-size: 28px;
+        opacity: 0; /* start hidden until animation overrides */
+        filter: drop-shadow(0 4px 6px rgba(0,0,0,0.15));
+    }
 
-Be thorough and helpful. If you cannot identify the plant with certainty, provide your best assessment and note any uncertainty."""
+    /* Water Spray Animation */
+    @keyframes water-burst {
+        0% { transform: translate(0, 0) scale(0.5); opacity: 1; filter: drop-shadow(0 0 5px rgba(64,196,255,0.8)); }
+        70% { opacity: 1; }
+        100% { transform: translate(var(--tx), var(--ty)) scale(1.5) rotate(var(--rot)); opacity: 0; filter: drop-shadow(0 0 20px rgba(64,196,255,0)); }
+    }
+    .water-droplet {
+        position: absolute;
+        bottom: 20px; /* position relative to button */
+        left: 50%;
+        margin-left: -15px; 
+        animation: water-burst 1.5s cubic-bezier(0.1, 0.8, 0.3, 1) forwards;
+        pointer-events: none;
+        z-index: 9999;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
+    # Inject leaves globally
+    st.markdown("""
+    <div class="leaf-container">
+        <div class="leaf" style="left: 10%; animation: fall 12s linear infinite; animation-delay: 0s;">🍃</div>
+        <div class="leaf" style="left: 25%; animation: fall-reverse 15s linear infinite; animation-delay: 2s;">🌿</div>
+        <div class="leaf" style="left: 45%; animation: fall 14s linear infinite; animation-delay: 5s;">🌱</div>
+        <div class="leaf" style="left: 65%; animation: fall-reverse 11s linear infinite; animation-delay: 1s;">🍃</div>
+        <div class="leaf" style="left: 85%; animation: fall 16s linear infinite; animation-delay: 3s;">🌿</div>
+        <div class="leaf" style="left: 95%; animation: fall-reverse 13s linear infinite; animation-delay: 6s;">🌱</div>
+        <div class="leaf" style="left: 5%; animation: fall 10s linear infinite; animation-delay: 7s;">🍃</div>
+        <div class="leaf" style="left: 55%; animation: fall-reverse 18s linear infinite; animation-delay: 4s;">🌿</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r") as f:
+                return json.load(f)
+        except:
+            return []
+    return []
+
+def save_to_history(plant_data):
+    history = load_history()
+    history.insert(0, plant_data)
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(history, f)
+
+def encode_image(image_bytes):
+    """
+    Optimizes and downscales the image to prevent API payload limits.
+    Returns base64 string.
+    """
+    img = Image.open(BytesIO(image_bytes))
+    if img.mode in ('RGBA', 'P'):
+        img = img.convert('RGB')
+        
+    # Max dimensions for Groq vision reasoning
+    max_size = (1024, 1024)
+    img.thumbnail(max_size, Image.Resampling.LANCZOS)
+    
+    buffered = BytesIO()
+    img.save(buffered, format="JPEG", quality=85)
+    return base64.b64encode(buffered.getvalue()).decode('utf-8')
+
+def analyze_plant(base64_image):
+    prompt = """
+    Analyze this plant image and provide a JSON response EXACTLY with these keys. Do not return any markdown codeblocks or text outside the JSON. Return valid JSON only:
+    {
+        "name": "Common name of the plant",
+        "health_status": "Is it healthy? If not, what is wrong? Provide specific details.",
+        "maintenance": "How to maintain it (water, light, soil).",
+        "garden_suitability": "Is it good for a typical garden or indoors? Why?",
+        "bee_impact": "How does it impact bees and pollinators?"
+    }
+    """
+    
     try:
-        response = client.chat.completions.create(
-            # Use Groq's current supported vision model.
-            # (Older `llama-*-vision-preview` models may get decommissioned.)
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
+        completion = client.chat.completions.create(
+            model=MODEL_NAME,
             messages=[
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "text",
-                            "text": prompt
-                        },
+                        {"type": "text", "text": prompt},
                         {
                             "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{image_type};base64,{image_base64}"
-                            }
+                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
                         }
                     ]
                 }
             ],
-            temperature=0.3,
-            max_completion_tokens=2000,
-            # Ask for strict JSON output (more reliable than trying to extract braces).
-            response_format={"type": "json_object"},
+            response_format={"type": "json_object"}
         )
-        
-        response_text = response.choices[0].message.content
-        
-        # Try to extract JSON from the response
-        try:
-            # First try strict parse (JSON mode usually returns a pure JSON object).
-            return json.loads(response_text)
-        except json.JSONDecodeError:
-            # Fallback: find JSON bounds in case the model returned extra text.
-            start_idx = response_text.find('{')
-            end_idx = response_text.rfind('}') + 1
-            if start_idx != -1 and end_idx > start_idx:
-                json_str = response_text[start_idx:end_idx]
-                return json.loads(json_str)
-        
-        # If JSON parsing fails, return a structured response
-        return {
-            "plant_name": "Unknown Plant",
-            "scientific_name": "Not identified",
-            "plant_type": "Unknown",
-            "raw_response": response_text,
-            "bee_friendly": {"is_good_for_bees": None, "bee_rating": "Unknown", "explanation": "Could not parse response"},
-            "garden_suitability": {"is_good_for_garden": None, "garden_rating": "Unknown", "benefits": [], "considerations": []},
-            "maintenance": {
-                "difficulty": "Unknown",
-                "watering": "Not specified",
-                "sunlight": "Not specified",
-                "soil": "Not specified",
-                "pruning": "Not specified",
-                "fertilizing": "Not specified",
-                "seasonal_care": "Not specified",
-                "common_problems": [],
-                "tips": [],
-            },
-            "interesting_facts": []
-        }
-        
+        content = completion.choices[0].message.content
+        if content.startswith("```json"):
+            content = content.replace("```json", "", 1).replace("```", "")
+        return json.loads(content)
     except Exception as e:
-        st.error(f"Error analyzing plant: {str(e)}")
+        st.error(f"Analysis failed: {str(e)}")
         return None
 
-
-def save_to_history(image_data, result):
-    """Save scan result to history."""
-    history_entry = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "image": image_data,
-        "result": result
-    }
-    st.session_state.scan_history.insert(0, history_entry)
-    # Keep only last 20 entries
-    st.session_state.scan_history = st.session_state.scan_history[:20]
-
-
-def display_result(result):
-    """Display the analysis result in a simple, user-focused format."""
-    if not result:
-        return
+def main():
+    inject_custom_css()
     
-    # Plant Name Header
-    st.markdown(f"## 🌱 {result.get('plant_name', 'Unknown Plant')}")
-    st.markdown(f"*{result.get('scientific_name', 'Scientific name not available')}*")
-    st.markdown(f"**Type:** {result.get('plant_type', 'Unknown')}")
-    
-    st.divider()
-    
-    # Bee Friendly Section
-    bee_info = result.get('bee_friendly', {})
-    st.markdown("### 🐝 Is it good for bees?")
-    if bee_info.get('is_good_for_bees'):
-        st.success(f"**Yes** ({bee_info.get('bee_rating', 'Unknown')})")
-    elif bee_info.get('is_good_for_bees') is False:
-        st.warning(f"**Not really** ({bee_info.get('bee_rating', 'Unknown')})")
-    else:
-        st.info(f"**Unknown** ({bee_info.get('bee_rating', 'Unknown')})")
-    st.write(bee_info.get('explanation', 'No information available'))
-    
-    # Maintenance Section
-    st.markdown("### 🛠️ How to maintain it")
-    maintenance = result.get('maintenance', {})
+    # Beautiful Header
+    st.markdown("<h1 style='text-align: center; font-size: 3.5em; padding-top: 10px;'>🌿 LeafLens AI</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; font-size: 1.3em; margin-bottom: 40px;'>Upload a photo of your plant to instantly uncover its secrets and health status.</p>", unsafe_allow_html=True)
 
-    st.markdown(f"**💪 Difficulty:** {maintenance.get('difficulty', 'Unknown')}")
-    st.markdown(f"**💧 Watering:** {maintenance.get('watering', 'Not specified')}")
-    st.markdown(f"**☀️ Sunlight:** {maintenance.get('sunlight', 'Not specified')}")
-    st.markdown(f"**🌍 Soil:** {maintenance.get('soil', 'Not specified')}")
-    st.markdown(f"**✂️ Pruning:** {maintenance.get('pruning', 'Not specified')}")
-    st.markdown(f"**🧪 Fertilizing:** {maintenance.get('fertilizing', 'Not specified')}")
-    st.markdown(f"**🗓️ Seasonal Care:** {maintenance.get('seasonal_care', 'Not specified')}")
-
-    problems = maintenance.get('common_problems', [])
-    if problems:
-        st.markdown("**⚠️ Common Problems:**")
-        for problem in problems:
-            st.markdown(f"- {problem}")
-
-    tips = maintenance.get('tips', [])
-    if tips:
-        st.markdown("**💡 Tips:**")
-        for tip in tips:
-            st.markdown(f"- {tip}")
-
-
-def display_history():
-    """Display the scan history."""
-    st.markdown("## 📜 Scan History")
+    # Sidebar for History
+    st.sidebar.markdown("<h2>📚 Botanical Journal</h2>", unsafe_allow_html=True)
+    search_query = st.sidebar.text_input("Search history...", "")
+    history = load_history()
     
-    if not st.session_state.scan_history:
-        st.info("No scans yet! Upload a plant image to get started.")
-        return
-    
-    for i, entry in enumerate(st.session_state.scan_history):
-        with st.expander(f"🌿 {entry['result'].get('plant_name', 'Unknown')} - {entry['timestamp']}", expanded=False):
-            col1, col2 = st.columns([1, 2])
+    filtered_history = [
+        item for item in history 
+        if 'name' in item and search_query.lower() in item['name'].lower()
+    ]
+
+    for item in filtered_history:
+        if 'name' in item:
+            with st.sidebar.expander(f"🍃 {item.get('name', 'Unknown')} ({item.get('date', '')})"):
+                st.write(f"**Health:** {item.get('health_status', 'N/A')}")
+                st.write(f"**Bees:** {item.get('bee_impact', 'N/A')}")
+
+    # Main Layout
+    col1, padding, col2 = st.columns([1.2, 0.1, 1.7])
+
+    with col1:
+        st.markdown("""
+        <div class='glass-card' style='text-align: center; padding: 15px; margin-bottom: 25px;'>
+            <h3 style='border-bottom: none; margin-bottom: 0px;'>📸 Capture & Discover</h3>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Session state for managing the uploaded file to replace the widget UX
+        if 'plant_image_bytes' not in st.session_state:
+            st.session_state.plant_image_bytes = None
+            st.session_state.plant_image_name = ""
             
-            with col1:
-                # Display thumbnail
-                try:
-                    image_bytes = base64.b64decode(entry['image'])
-                    image = Image.open(io.BytesIO(image_bytes))
-                    st.image(image, width=160)
-                except:
-                    st.write("Image not available")
+        if st.session_state.plant_image_bytes is None:
+            uploaded_file = st.file_uploader("", type=["jpg", "jpeg", "png", "webp"])
+            if uploaded_file is not None:
+                st.session_state.plant_image_bytes = uploaded_file.getvalue()
+                st.session_state.plant_image_name = uploaded_file.name
+                st.rerun() # Refresh to hide uploader and show image
+        else:
+            # Display image in place of the uploader
+            st.image(st.session_state.plant_image_bytes, caption=st.session_state.plant_image_name, use_container_width=True)
             
-            with col2:
-                result = entry['result']
-                st.markdown(f"**Scientific Name:** {result.get('scientific_name', 'Unknown')}")
-                
-                bee_info = result.get('bee_friendly', {})
-                garden_info = result.get('garden_suitability', {})
-                
-                st.markdown(f"**🐝 Bee Rating:** {bee_info.get('bee_rating', 'Unknown')}")
-                st.markdown(f"**🏡 Garden Rating:** {garden_info.get('garden_rating', 'Unknown')}")
-                
-                maintenance = result.get('maintenance', {})
-                st.markdown(f"**Care Difficulty:** {maintenance.get('difficulty', 'Unknown')}")
+            # Action Buttons
+            if st.button("✨ Identify & Analyze Plant"):
+                with st.spinner("🌿 Consulting the botanical AI..."):
+                    base64_img = encode_image(st.session_state.plant_image_bytes)
+                    result = analyze_plant(base64_img)
+                    
+                    if result:
+                        result['date'] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        save_to_history(result)
+                        st.session_state['last_result'] = result
+                        
+                        # Spray water effect immediately after analyzing
+                        st.markdown("""
+                            <div style="position: relative; width: 100%; height: 0; display: flex; justify-content: center;">
+                                <div class="water-droplet" style="--tx: -120px; --ty: -180px; --rot: -45deg; font-size: 35px;">💦</div>
+                                <div class="water-droplet" style="--tx: 120px; --ty: -160px; --rot: 45deg; font-size: 30px;">💧</div>
+                                <div class="water-droplet" style="--tx: 0px; --ty: -220px; --rot: 0deg; font-size: 40px;">💦</div>
+                                <div class="water-droplet" style="--tx: -70px; --ty: -140px; --rot: -20deg; font-size: 25px;">💧</div>
+                                <div class="water-droplet" style="--tx: 70px; --ty: -150px; --rot: 20deg; font-size: 28px;">💦</div>
+                                <div class="water-droplet" style="--tx: -40px; --ty: -200px; --rot: -10deg; font-size: 32px;">💧</div>
+                                <div class="water-droplet" style="--tx: 40px; --ty: -210px; --rot: 10deg; font-size: 38px;">💦</div>
+                                <div class="water-droplet" style="--tx: -160px; --ty: -100px; --rot: -60deg; font-size: 24px;">💧</div>
+                                <div class="water-droplet" style="--tx: 160px; --ty: -110px; --rot: 60deg; font-size: 26px;">💦</div>
+                            </div>
+                        """, unsafe_allow_html=True)
             
-            if st.button(f"View Full Details", key=f"view_{i}"):
-                st.session_state.selected_history = i
-                st.session_state.show_history = False
+            # Button to clear the image and bring the uploader back
+            if st.button("🔄 Choose Different Photo"):
+                st.session_state.plant_image_bytes = None
+                st.session_state.plant_image_name = ""
+                if 'last_result' in st.session_state:
+                    del st.session_state['last_result']
                 st.rerun()
 
-
-# Main App
-def main():
-    # Header
-    st.markdown('<h1 class="main-header">🌿 Plant Scanner AI</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Powered by Groq AI - Identify plants, check bee friendliness, and get care tips!</p>', unsafe_allow_html=True)
-    
-    # Sidebar
-    with st.sidebar:
-        st.markdown("## 🌱 Navigation")
-        
-        if st.button("🔍 New Scan", use_container_width=True):
-            st.session_state.show_history = False
-            st.session_state.latest_result = None
-            st.session_state.last_uploaded_hash = None
-            if 'selected_history' in st.session_state:
-                del st.session_state.selected_history
-            st.rerun()
-        
-        if st.button("📜 View History", use_container_width=True):
-            st.session_state.show_history = True
-            st.rerun()
-        
-        st.divider()
-        
-        st.markdown("### 📊 Stats")
-        st.metric("Total Scans", len(st.session_state.scan_history))
-        
-        bee_friendly_count = sum(1 for entry in st.session_state.scan_history 
-                                  if entry['result'].get('bee_friendly', {}).get('is_good_for_bees'))
-        st.metric("Bee-Friendly Plants Found", bee_friendly_count)
-        
-        st.divider()
-        
-        st.markdown("### ℹ️ About")
-        st.markdown("""
-        This app uses AI to:
-        - 🌱 Identify plants from photos
-        - 🐝 Check if they're good for bees
-        - 🏡 Evaluate garden suitability
-        - 🛠️ Provide care instructions
-        """)
-        
-        if st.button("🗑️ Clear History", use_container_width=True):
-            st.session_state.scan_history = []
-            st.success("History cleared!")
-            st.rerun()
-    
-    # Main Content
-    if st.session_state.show_history:
-        display_history()
-    elif 'selected_history' in st.session_state:
-        # Show selected history item
-        entry = st.session_state.scan_history[st.session_state.selected_history]
-        
-        col1, col2 = st.columns([1, 2])
-        with col1:
-            try:
-                image_bytes = base64.b64decode(entry['image'])
-                image = Image.open(io.BytesIO(image_bytes))
-                st.image(image, caption="Scanned Plant", width=240)
-            except:
-                st.write("Image not available")
-        
-        with col2:
-            st.markdown(f"**Scanned on:** {entry['timestamp']}")
-        
-        display_result(entry['result'])
-        
-        if st.button("← Back to Scanner"):
-            del st.session_state.selected_history
-            st.rerun()
-    else:
-        # Scanner View
-        st.markdown("### 📸 Upload a Plant Image")
-
-        uploaded_file = st.file_uploader(
-            "Upload a plant photo",
-            type=['png', 'jpg', 'jpeg', 'webp'],
-            accept_multiple_files=False,
-            label_visibility="collapsed",
-            help="Click the white upload area to add a plant photo"
-        )
-
-        if uploaded_file is not None:
-            file_bytes = uploaded_file.getvalue()
-            file_hash = hashlib.sha256(file_bytes).hexdigest()
-
-            # Preview
-            try:
-                image = Image.open(io.BytesIO(file_bytes))
-                st.image(image, caption="Uploaded Plant", width=240)
-            except Exception:
-                st.write("Uploaded image preview not available.")
-
-            # Auto-scan as soon as a new image is uploaded
-            if st.session_state.last_uploaded_hash != file_hash:
-                st.session_state.latest_result = None
-
-                # Get image type for the data URL
-                if uploaded_file.type and '/' in uploaded_file.type:
-                    ext = uploaded_file.type.split('/')[-1]
-                    image_type = f"image/{ext}"
-                else:
-                    image_type = "image/jpeg"
-
-                with st.spinner("🌿 Analyzing plant... This may take a moment..."):
-                    image_base64 = encode_image_to_base64(uploaded_file)
-                    result = analyze_plant(image_base64, image_type)
-                    if result:
-                        save_to_history(image_base64, result)
-                        st.session_state.last_uploaded_hash = file_hash
-                        st.session_state.latest_result = result
-                        st.success("✅ Scan complete!")
-                    else:
-                        st.session_state.latest_result = None
-
-            if st.session_state.latest_result is not None:
-                st.divider()
-                st.markdown("### 🧾 Scan Result")
-                display_result(st.session_state.latest_result)
+    with col2:
+        if 'last_result' in st.session_state:
+            res = st.session_state['last_result']
+            st.markdown(f"<h2 style='margin-top: 0;'>🌿 Analysis: {res.get('name', 'Unknown Plant')}</h2>", unsafe_allow_html=True)
+            
+            st.markdown(f"""
+            <div class="glass-card">
+                <h3>🩺 Health & Maintenance</h3>
+                <p><strong>Status:</strong> {res.get('health_status', 'N/A')}</p>
+                <p><strong>Care Routine:</strong> {res.get('maintenance', 'N/A')}</p>
+            </div>
+            
+            <div class="glass-card">
+                <h3>🏡 Garden Suitability</h3>
+                <p>{res.get('garden_suitability', 'N/A')}</p>
+            </div>
+            
+            <div class="glass-card">
+                <h3>🐝 Environmental Impact</h3>
+                <p>{res.get('bee_impact', 'N/A')}</p>
+            </div>
+            """, unsafe_allow_html=True)
         else:
             st.markdown("""
-            ### 📋 Tips for Best Results
-            - 📸 Take a clear, well-lit photo
-            - 🎯 Focus on the plant's leaves and flowers
-            - 🔍 Get close enough to see details
-            - 🌤️ Natural lighting works best
-            - 📐 Include the whole plant if possible
-            """)
-
+            <div class="glass-card" style="text-align: center; padding: 60px 20px;">
+                <h3 style="border: none; margin-bottom: 20px; font-size: 1.8em;">Awaiting a Plant...</h3>
+                <p style="font-size: 1.2em; color: #388e3c;">Upload a photo on the left, and I will reveal everything about its health, care instructions, and impact on our environment!</p>
+            </div>
+            """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
